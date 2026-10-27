@@ -1,6 +1,4 @@
 import crypto from 'crypto';
-import fs from 'fs';
-import path from 'path';
 
 interface AuthEnvironment {
   JWT_SECRET?: string;
@@ -25,18 +23,5 @@ export function resolveJwtSecret(environment: AuthEnvironment = {
     // Standalone operators can configure a secret to retain sessions on restart.
     return crypto.randomBytes(32).toString('hex');
   }
-  if (!environment.USER_DATA_PATH) throw new Error('Electron user data path required');
-
-  // A per-install key preserves offline desktop sessions across process restarts.
-  // It is separate from logs and relies on the same OS-user boundary as app state.
-  const file = path.join(environment.USER_DATA_PATH, '.session-signing-key');
-  fs.mkdirSync(environment.USER_DATA_PATH, { recursive: true, mode: 0o700 });
-  try {
-    fs.writeFileSync(file, crypto.randomBytes(32).toString('hex'), { flag: 'wx', mode: 0o600 });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-  }
-  const secret = fs.readFileSync(file, 'utf8');
-  if (!/^[a-f0-9]{64}$/.test(secret)) throw new Error('Invalid persisted session signing key');
-  return secret;
+  throw new Error('Electron must provide an OS-protected session signing key');
 }

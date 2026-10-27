@@ -1,9 +1,10 @@
-import {BrowserWindow, Menu, app} from 'electron';
+import {BrowserWindow, Menu, app, shell} from 'electron';
 import {spawn, ChildProcess} from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import {WindowConfig} from '../types';
 import {storeManager} from './store';
+import {isAppUrl, isTrustedCaller, isExternalLink} from './security';
 
 export class WindowManager {
     private mainWindow: BrowserWindow | null = null;
@@ -38,7 +39,9 @@ export class WindowManager {
         this.mainWindow = new BrowserWindow({
             ...windowConfig,
             webPreferences: {
-                nodeIntegration: true,
+                nodeIntegration: false,
+                sandbox: true,
+                webviewTag: false,
                 contextIsolation: true,
                 devTools: this.isDev || this.isDebug,
                 partition: 'persist:storytel-app',
@@ -48,6 +51,23 @@ export class WindowManager {
             show: false,
             backgroundColor: '#0A0A0A'
         });
+
+        const contents = this.mainWindow.webContents;
+        contents.setWindowOpenHandler(({ url }) => {
+            if (isAppUrl(contents.getURL(), this.isDev) && isExternalLink(url)) {
+                void shell.openExternal(url).catch(() => console.error('External link could not be opened'));
+            }
+            return { action: 'deny' };
+        });
+        contents.on('will-navigate', (event, url) => {
+            if (!isAppUrl(url, this.isDev)) event.preventDefault();
+        });
+        contents.on('will-redirect', (event, url) => {
+            if (!isAppUrl(url, this.isDev)) event.preventDefault();
+        });
+        contents.on('will-attach-webview', (event) => event.preventDefault());
+        contents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+        contents.session.setPermissionCheckHandler(() => false);
 
         if (this.isDev) {
             this.startDevelopmentServers();
@@ -142,6 +162,10 @@ export class WindowManager {
     private startProductionServer(): void {
         const indexPath = path.join(__dirname, '../../../client/build/index.html');
         this.mainWindow?.loadFile(indexPath);
+    }
+
+    isTrustedSender(event: Electron.IpcMainEvent | Electron.IpcMainInvokeEvent): boolean {
+        return isTrustedCaller(event, this.mainWindow?.webContents, this.isDev);
     }
 
     getWindow(): BrowserWindow | null {

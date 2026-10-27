@@ -1,4 +1,5 @@
 import { BrowserWindow, session } from 'electron';
+import { isSsoUrl } from './security';
 
 export type SsoProvider = 'google' | 'apple';
 
@@ -18,7 +19,7 @@ export interface SsoLoginResult {
 
 const STORYTEL_LOGIN_URL = 'https://www.storytel.com/it/login';
 const STORYTEL_HOST = 'storytel.com';
-const SSO_PARTITION = 'persist:storytel-sso';
+const SSO_PARTITION = 'storytel-sso';
 // Any page on www.storytel.com works for reading the Firebase IndexedDB; we
 // pick the locale root because it always exists (no 404 redirect).
 const STORYTEL_WWW_STORAGE_TARGET = 'https://www.storytel.com/it/';
@@ -83,39 +84,6 @@ function buildProviderClickScript(provider: SsoProvider): string {
 export class SsoManager {
   private window: BrowserWindow | null = null;
 
-  private async clearStorytelState(ssoSession: Electron.Session): Promise<void> {
-    try {
-      // Remove every cookie scoped to storytel.com (covers .storytel.com,
-      // www.storytel.com, private.storytel.com).
-      const cookies = await ssoSession.cookies.get({ domain: STORYTEL_HOST });
-      await Promise.all(
-        cookies.map((c) => {
-          const host = (c.domain ?? '').replace(/^\./, '') || STORYTEL_HOST;
-          const url = `${c.secure ? 'https' : 'http'}://${host}${c.path ?? '/'}`;
-          return ssoSession.cookies.remove(url, c.name).catch(() => undefined);
-        })
-      );
-    } catch (err) {
-      console.error('[sso] failed to clear storytel cookies:', err);
-    }
-    // Clear IndexedDB / localStorage / sessionStorage on the storytel origins
-    // (this is where the Firebase Web SDK persists the authenticated user).
-    const origins = [
-      'https://www.storytel.com',
-      'https://private.storytel.com',
-    ];
-    for (const origin of origins) {
-      try {
-        await ssoSession.clearStorageData({
-          origin,
-          storages: ['indexdb', 'localstorage'],
-        });
-      } catch (err) {
-        console.error(`[sso] failed to clear storage for ${origin}:`, err);
-      }
-    }
-  }
-
   async openSsoWindow(
     parent?: BrowserWindow | null,
     provider?: SsoProvider
@@ -128,10 +96,9 @@ export class SsoManager {
     const ssoSession = session.fromPartition(SSO_PARTITION);
     ssoSession.setUserAgent(DESKTOP_UA);
 
-    // Wipe any prior Storytel session so the provider picker is shown again.
-    // We deliberately leave accounts.google.com / appleid.apple.com cookies
-    // intact so the user isn't forced to re-enter the OAuth provider password.
-    await this.clearStorytelState(ssoSession);
+    await ssoSession.clearStorageData();
+    ssoSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+    ssoSession.setPermissionCheckHandler(() => false);
 
     this.window = new BrowserWindow({
       width: 520,
@@ -147,9 +114,38 @@ export class SsoManager {
       },
     });
 
+    const childWindows = new Set<BrowserWindow>();
+    const restrictWindow = (win: BrowserWindow): void => {
+      win.webContents.on('will-navigate', (event, url) => {
+        if (!isSsoUrl(url)) event.preventDefault();
+      });
+      win.webContents.on('will-redirect', (event, url) => {
+        if (!isSsoUrl(url)) event.preventDefault();
+      });
+      win.webContents.setWindowOpenHandler(({ url }) => isSsoUrl(url) ? {
+        action: 'allow',
+        overrideBrowserWindowOptions: {
+          webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, webviewTag: false },
+        },
+      } : { action: 'deny' });
+      win.webContents.on('will-attach-webview', (event) => event.preventDefault());
+      win.webContents.on('did-create-window', (child) => {
+        childWindows.add(child);
+        child.on('closed', () => childWindows.delete(child));
+        restrictWindow(child);
+      });
+    };
+    restrictWindow(this.window);
     this.window.webContents.setUserAgent(DESKTOP_UA);
 
-    await this.window.loadURL(STORYTEL_LOGIN_URL);
+    try {
+      await this.window.loadURL(STORYTEL_LOGIN_URL);
+    } catch {
+      this.window?.destroy();
+      this.window = null;
+      await ssoSession.clearStorageData();
+      return { cancelled: false, error: 'SSO page could not be loaded' };
+    }
 
     if (provider) {
       // Fire-and-forget: don't block the SSO flow if the click script fails.
@@ -177,8 +173,17 @@ export class SsoManager {
         } catch {
           // ignore
         }
-        this.window = null;
-        resolve(result);
+        for (const child of childWindows) {
+          if (!child.isDestroyed()) child.destroy();
+        }
+        // Finish cleanup before allowing another attempt to use this partition.
+        void ssoSession.clearStorageData().then(() => {
+          this.window = null;
+          resolve(result);
+        }, () => {
+          this.window = null;
+          resolve({ cancelled: false, error: 'SSO session cleanup failed' });
+        });
       };
 
       const extractFirebaseRefreshToken = async (): Promise<{
@@ -188,6 +193,7 @@ export class SsoManager {
         const result = await win.webContents.executeJavaScript(
           `(async () => {
             try {
+              if (location.origin !== 'https://www.storytel.com') return null;
               const db = await new Promise((res, rej) => {
                 const req = indexedDB.open('firebaseLocalStorageDb');
                 req.onsuccess = e => res(e.target.result);
@@ -298,7 +304,8 @@ export class SsoManager {
         if (inCaptureFlow) return;
         try {
           const parsed = new URL(url);
-          if (!parsed.hostname.endsWith(STORYTEL_HOST)) return;
+          if (parsed.protocol !== 'https:' ||
+            (parsed.hostname !== STORYTEL_HOST && !parsed.hostname.endsWith('.' + STORYTEL_HOST))) return;
           if (FIREBASE_AUTH_PATH.test(parsed.pathname)) return;
           if (LOGIN_PATH.test(parsed.pathname)) return;
           scheduleCapture();

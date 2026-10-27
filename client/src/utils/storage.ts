@@ -15,6 +15,9 @@ try {
 }
 
 let storage : StorageType;
+let browserToken: string | undefined;
+// Browser mode has no OS credential vault. Purge old persistent sessions.
+if (!isElectron) localStorage.removeItem('token');
 
 if (isElectron) {
     storage = {
@@ -25,12 +28,14 @@ if (isElectron) {
 } else {
     storage = {
         get: async (key: string) => {
-            return localStorage.getItem(key);
+            return key === 'token' ? browserToken : localStorage.getItem(key);
         },
         set: async (key: string, value: any) => {
+            if (key === 'token') { browserToken = value; return; }
             return localStorage.setItem(key, value);
         },
         remove: async (key: any) => {
+            if (key === 'token') browserToken = undefined;
             return localStorage.removeItem(key);
         },
     };

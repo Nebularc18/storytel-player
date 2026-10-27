@@ -18,7 +18,7 @@
     "dev": "concurrently \"npm run server:dev\" \"npm run client\"",
     "server:dev": "cd server && npm install && npm run dev",
     "install-all": "npm install && cd server && npm install && cd ../client && npm install",
-    "test": "npm --prefix server test",
+    "test": "npm --prefix server test && node --test test/desktop-security.test.cjs",
     "electron:build": "tsc -p tsconfig.electron.json",
     "electron": "npm run electron:build && electron .",
     "electron:dev": "npm run server:build && npm run electron:build && cross-env NODE_ENV=development electron .",
@@ -43,8 +43,7 @@
   "license": "MIT",
   "dependencies": {
     "dot-object": "^2.1.5",
-    "electron-store": "^10.1.0",
-    "electron-updater": "^6.7.3"
+    "electron-store": "^10.1.0"
   },
   "keywords": [
     "storytel",
@@ -65,7 +64,7 @@
     "conventional-changelog": "^7.2.0",
     "conventional-changelog-angular": "^8.3.1",
     "cross-env": "^10.1.0",
-    "electron": "^43.1.0",
+    "electron": "^43.8.3",
     "electron-builder": "^26.17.0",
     "typescript": "^5.9.3"
   },
@@ -84,8 +83,7 @@
       "client/build/**/*",
       "dist/electron/**/*",
       "server/dist/**/*",
-      "node_modules/**/*",
-      "downloads/**/*"
+      "node_modules/**/*"
     ],
     "mac": {
       "category": "public.app-category.audio",
@@ -102,7 +100,7 @@
     },
     "win": {
       "target": "nsis",
-      "verifyUpdateCodeSignature": false,
+      "verifyUpdateCodeSignature": true,
       "publish": {
         "provider": "github",
         "releaseType": "draft"

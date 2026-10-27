@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
+import { contextBridge, ipcRenderer } from 'electron';
 import type { LanguageState } from './i18n';
 
 // Store API
@@ -31,13 +31,13 @@ contextBridge.exposeInMainWorld('electronWindow', {
 // Tray Controls API
 contextBridge.exposeInMainWorld('trayControls', {
   onPlayPause: (callback: () => void): void => {
-    ipcRenderer.on('tray-play-pause', callback);
+    ipcRenderer.on('tray-play-pause', () => callback());
   },
-  onSetSpeed: (callback: (_event: IpcRendererEvent, speed: number) => void): void => {
-    ipcRenderer.on('tray-set-speed', callback);
+  onSetSpeed: (callback: (speed: number) => void): void => {
+    ipcRenderer.on('tray-set-speed', (_event, speed: number) => callback(speed));
   },
   onLogout: (callback: () => void): void => {
-    ipcRenderer.on('tray-logout', callback);
+    ipcRenderer.on('tray-logout', () => callback());
   },
   updatePlayingState: (isPlaying: boolean, bookTitle: string): void => {
     ipcRenderer.send('update-playing-state', { isPlaying, bookTitle });
@@ -51,7 +51,7 @@ contextBridge.exposeInMainWorld('trayControls', {
 contextBridge.exposeInMainWorld('electronLogs', {
   openLogsFolder: (): Promise<void> => ipcRenderer.invoke('open-logs-folder'),
   onOpenLogsModal: (callback: () => void): void => {
-    ipcRenderer.on('open-logs-modal', callback);
+    ipcRenderer.on('open-logs-modal', () => callback());
   },
 });
 
