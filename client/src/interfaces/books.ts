@@ -6,7 +6,7 @@ export interface BookShelfResponse {
 }
 
 export interface BookShelfEntity {
-    abook: Abook
+    abook: Abook | null
     abookMark: AbookMark
     book: Book
     ebook: any
@@ -75,7 +75,7 @@ export interface Book {
     abridged: number
     authors: Author[]
     authorsAsString: string
-    category: Category
+    category?: Category | null
     consumableId: string
     cover: string
     coverE: string
