@@ -1,5 +1,11 @@
 # Storytel Player for Desktop
 
+This fork contains security fixes for diagnostic logging, SSO verification,
+local media access, and release builds. See [Security fixes](SECURITY_FIXES.md)
+for validation, migration notes, and remaining limitations. Existing app sessions
+must sign in again after upgrading. Upstream download links below refer to the
+original project and do not include these fork changes.
+
 ![](https://img.shields.io/github/release/debba/storytel-player.svg?style=flat)
 ![](https://img.shields.io/github/downloads/debba/storytel-player/total.svg?style=flat)
 ![Build & Release](https://github.com/debba/storytel-player/workflows/Build%20&%20Release/badge.svg)

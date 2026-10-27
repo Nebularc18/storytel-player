@@ -142,8 +142,6 @@ class StorytelClient {
   private client: AxiosInstance;
   public loginData: LoginData;
   private ssoSession: SsoSession | null = null;
-  private cachedFirebaseIdToken: { token: string; expiresAt: number } | null =
-    null;
 
   private static firebaseTokenCache = new Map<
     string,
@@ -348,7 +346,6 @@ class StorytelClient {
       });
       this.loginData = response.data;
       this.ssoSession = null;
-      this.cachedFirebaseIdToken = null;
 
       const now = Math.floor(Date.now() / 1000);
       const cacheKey = `${trimmedEmail}:${encryptedPassword}`;
@@ -383,12 +380,21 @@ class StorytelClient {
 
   loginViaSso(session: SsoSession): void {
     this.ssoSession = session;
-    this.cachedFirebaseIdToken = null;
     // Mark legacy credentials as unset so any accidental fallback path errors
     // visibly instead of using stale data.
     this.loginData = {
       accountInfo: { jwt: "", singleSignToken: "" },
     };
+  }
+
+  async verifySsoSession(): Promise<void> {
+    if (!this.ssoSession) throw new Error("SSO session required");
+    const snapshot = await this.fetchBookshelfSnapshot();
+    if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot) ||
+      !(typeof snapshot.resourceVersion === "string" ||
+        (snapshot.items && typeof snapshot.items === "object" && !Array.isArray(snapshot.items)))) {
+      throw new Error("Invalid Storytel verification response");
+    }
   }
 
   getSsoSession(): SsoSession | null {

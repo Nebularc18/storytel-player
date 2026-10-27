@@ -10,11 +10,14 @@ import { pathToFileURL } from "url";
 import axios from "axios";
 import { appLogger } from "./logger";
 import { encryptPassword } from "./passwordCrypt";
+import { createMediaAccess, verifyMediaAccess } from "./mediaAccess";
+import { resolveJwtSecret } from "./authSecret";
 
 // Extend JWT user type. Legacy (email/password) login populates storytelToken,
 // jwt, and encryptedPassword; SSO login populates the sso* fields instead and
 // leaves the legacy ones empty. Email is set in both cases.
 interface JWTUser {
+  authVersion: number;
   email: string;
   storytelToken: string;
   jwt: string;
@@ -87,9 +90,8 @@ function replyError(reply: FastifyReply, error: any) {
   return reply.code(statusCode).send({ error: error.message });
 }
 
-const JWT_SECRET =
-  process.env.JWT_SECRET ||
-  "your-super-secret-jwt-key-change-this-in-production";
+const JWT_SECRET = resolveJwtSecret();
+const AUTH_VERSION = 2;
 const DOWNLOADS_DIR = process.env.IS_ELECTRON
   ? "" + process.env.DOWNLOAD_PATH
   : path.join(__dirname, "downloads");
@@ -166,6 +168,9 @@ fastify.decorate(
   async function (request: FastifyRequest, reply: FastifyReply) {
     try {
       await request.jwtVerify();
+      if (request.user.authVersion !== AUTH_VERSION) {
+        return reply.code(401).send({ error: "Not authenticated" });
+      }
     } catch (err) {
       reply.code(401).send({ error: "Not authenticated" });
     }
@@ -189,6 +194,7 @@ fastify.post<{
 
     // Create JWT token with storytel client data
     const token = fastify.jwt.sign({
+      authVersion: AUTH_VERSION,
       storytelToken: loginData.accountInfo.singleSignToken,
       jwt: loginData.accountInfo.jwt,
       email: email,
@@ -223,11 +229,24 @@ fastify.post<{
       cid,
     } = request.body;
 
-    if (!storytelSession || !firebaseRefreshToken || !firebaseApiKey) {
+    if (![storytelSession, firebaseRefreshToken, firebaseApiKey].every(
+      (value) => typeof value === "string" && value.trim().length > 0,
+    ) || (email !== undefined && typeof email !== "string") ||
+      (cid !== undefined && typeof cid !== "string")) {
       return reply.code(400).send({ error: "Missing SSO credentials" });
     }
 
+    const client = new StorytelClient();
+    client.loginViaSso({
+      storytelSession, firebaseRefreshToken, firebaseApiKey,
+      email: email ?? "", cid: cid ?? "",
+    });
+    // A Firebase refresh alone is insufficient: Storytel must accept its bearer.
+    // The cookie/email/cid remain client metadata, never local authorization.
+    await client.verifySsoSession();
+
     const token = fastify.jwt.sign({
+      authVersion: AUTH_VERSION,
       email: email ?? "",
       storytelToken: "",
       jwt: "",
@@ -238,8 +257,8 @@ fastify.post<{
     });
 
     reply.send({ success: true, message: "SSO login successful", token });
-  } catch (error: any) {
-    reply.code(401).send({ error: error.message });
+  } catch {
+    reply.code(401).send({ error: "SSO authentication failed" });
   }
 });
 
@@ -389,13 +408,11 @@ fastify.post<{
           });
         } else {
           // Use HTTP endpoint for browser
-          const protocol = request.protocol;
-          const host = request.hostname;
+          const capability = createMediaAccess(bookId);
           const port = (request.socket as any).localPort || 3001;
-          const baseUrl = `${protocol}://${host}:${port}`;
-
+          const baseUrl = `${request.protocol}://${request.hostname}:${port}`;
           reply.send({
-            streamUrl: `${baseUrl}/api/local-stream/${bookId}`,
+            streamUrl: `${baseUrl}/api/local-stream/${bookId}?access=${capability}`,
             remote: false,
           });
         }
@@ -619,7 +636,7 @@ fastify.get<{
 fastify.get("/api/auth/status", async (request, reply) => {
   try {
     await request.jwtVerify();
-    reply.send({ authenticated: true });
+    reply.send({ authenticated: request.user.authVersion === AUTH_VERSION });
   } catch (err) {
     reply.send({ authenticated: false });
   }
@@ -867,8 +884,14 @@ fastify.delete<{
   },
 );
 
-fastify.get<{ Params: { bookId: string } }>(
+fastify.get<{ Params: { bookId: string }; Querystring: { access?: string } }>(
   "/api/local-stream/:bookId",
+  {
+    preHandler: async (request, reply) => {
+      if (verifyMediaAccess(request.params.bookId, request.query.access)) return;
+      await fastify.authenticate(request, reply);
+    },
+  },
   async (request, reply) => {
     try {
       const { bookId } = request.params;
@@ -882,11 +905,12 @@ fastify.get<{ Params: { bookId: string } }>(
       const range = request.headers.range;
 
       if (range) {
-        const [startStr, endStr] = range.replace(/bytes=/, "").split("-");
-        const start = parseInt(startStr, 10);
-        const end = endStr ? parseInt(endStr, 10) : stat.size - 1;
+        const match = /^bytes=(\d+)-(\d*)$/.exec(range);
+        const start = match ? Number(match[1]) : NaN;
+        const end = match?.[2] ? Number(match[2]) : stat.size - 1;
 
-        if (start >= stat.size || end >= stat.size) {
+        if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) ||
+          start < 0 || end < start || start >= stat.size || end >= stat.size) {
           reply
             .code(416)
             .header("Content-Range", `bytes */${stat.size}`)
