@@ -1,3 +1,10 @@
+## [1.4.3](https://github.com/Nebularc18/storytel-player/compare/v1.4.2...v1.4.3) (2026-10-27)
+
+### Bug Fixes
+
+* Prevent the book details page from crashing when audio or category metadata is missing.
+* Hide the Listen action for books without an audiobook edition.
+
 ## [1.4.1](https://github.com/debba/storytel-player/compare/v1.4.0...v1.4.1) (2026-09-27)
 
 
