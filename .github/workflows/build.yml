@@ -1,195 +1,96 @@
-name: Build & Release
-
-env:
-  GH_TOKEN: ${{ SECRETS.GITHUB_TOKEN }}
+name: Tagged Windows release
 
 on:
   push:
-    branches:
-      - master
+    tags:
+      - 'v*'
 
-defaults:
-  run:
-    shell: bash
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  prepare:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Validate release tag and source
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node scripts/validate-release-tag.cjs >> "$GITHUB_OUTPUT"
+          # Release only commits already integrated into this fork's default branch.
+          git fetch origin develop
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/develop
+
+  windows:
+    needs: validate
+    permissions:
+      contents: read
+    uses: ./.github/workflows/windows-validation.yml
+
+  publish:
+    needs: [validate, windows]
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: write
-    outputs:
-      tag: ${{ steps.meta.outputs.tag }}
     steps:
-      - name: Check out Git repository
-        uses: actions/checkout@v4
-
-      - name: Resolve release tag from package.json
-        id: meta
+      - uses: actions/download-artifact@v4
+        with:
+          name: unsigned-windows-installer
+          path: release
+      - name: Verify installer checksum
         run: |
-          # electron-builder derives its release tag from the package.json version
-          # (v<version>); resolve the same value so we can create the release up front.
-          VERSION=$(node -p "require('./package.json').version")
-          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
-
-      - name: Create the draft release up front
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import re
+          directory = Path('release')
+          installers = list(directory.glob('*.exe'))
+          if len(installers) != 1:
+              raise SystemExit('Exactly one Windows installer is required')
+          installer = installers[0]
+          expected = re.search(r'\b[0-9a-fA-F]{64}\b', (directory / 'windows-installer-sha256.txt').read_text(encoding='utf-8-sig'))
+          actual = hashlib.sha256(installer.read_bytes()).hexdigest()
+          if not expected or actual != expected.group().lower():
+              raise SystemExit('Installer checksum mismatch')
+          (directory / 'SHA256SUMS.txt').write_text(f'{actual}  {installer.name}\n')
+          PY
+      - name: Publish GitHub release
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.meta.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          IS_PRERELEASE: ${{ needs.validate.outputs.prerelease }}
         run: |
-          # The build matrix runs in parallel and each electron-builder invocation
-          # would otherwise create its own draft release, racing into duplicate
-          # drafts for the same tag. Creating it once here means every build job
-          # just uploads its assets to the existing release.
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG already exists, reusing it."
-          else
-            gh release create "$TAG" \
-              --draft \
-              --target "$GITHUB_SHA" \
-              --title "$TAG" \
-              --notes "Automated release build."
+          cat > release-notes.md <<'NOTES'
+          Patched unofficial Storytel Player for Windows x64.
+
+          Download the `.exe` installer below. `SHA256SUMS.txt` contains its SHA-256 checksum.
+
+          This release includes OS-encrypted saved sessions, removal of saved passwords and automatic password login, Electron sandbox and IPC restrictions, disabled automatic updates, and dependency advisory fixes.
+
+          Before publication, the workflow checked dependency advisories, ran regression tests, built the installer, verified native Windows encryption across restart and offline fixture playback/seeking, and installed and launched the packaged player in a disposable Windows runner.
+
+          The installer is unsigned. Real Storytel login, Google/Apple SSO and live audiobook downloads still require acceptance testing. This is an unofficial application, independent of Storytel. Automatic updates remain disabled.
+          NOTES
+          release_flags=()
+          if [ "$IS_PRERELEASE" = 'true' ]; then
+            release_flags+=(--prerelease)
           fi
-
-  linux_x64:
-    needs: prepare
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Check out Git repository
-        uses: actions/checkout@v4
-
-      - name: Install Node.js and NPM
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Build
-        run: npm run install-all
-
-      - name: Release
-        if: contains(github.ref, 'master')
-        run: npm run electron:dist:linux:x64 -- --publish always
-
-  linux_arm64:
-    needs: prepare
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Check out Git repository
-        uses: actions/checkout@v4
-
-      - name: Install Node.js and NPM
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Build
-        run: npm run install-all
-
-      - name: Release
-        if: contains(github.ref, 'master')
-        run: npm run electron:dist:linux:arm64 -- --publish always
-
-  linux_arm:
-    needs: prepare
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Check out Git repository
-        uses: actions/checkout@v4
-
-      - name: Install Node.js and NPM
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Build
-        run: npm run install-all
-
-      - name: Release
-        if: contains(github.ref, 'master')
-        run: npm run electron:dist:linux:arm -- --publish always
-
-  dmg_x64:
-    needs: prepare
-    runs-on: macos-latest
-
-    steps:
-      - name: Check out Git repository
-        uses: actions/checkout@v4
-
-      - name: Install Node.js and NPM
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Build
-        run: npm run install-all
-
-      # Notarization uses the App Store Connect API key. The .p8 is stored
-      # base64-encoded in APPLE_API_KEY_CONTENT and decoded into a temp file.
-      - name: Prepare Apple API key
-        run: |
-          echo "${{ secrets.APPLE_API_KEY_CONTENT }}" | base64 --decode > "$RUNNER_TEMP/apple_api_key.p8"
-          echo "APPLE_API_KEY=$RUNNER_TEMP/apple_api_key.p8" >> "$GITHUB_ENV"
-
-      - name: Release
-        if: contains(github.ref, 'master')
-        env:
-          CSC_LINK: ${{ secrets.APPLE_CERTIFICATE }}
-          CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: npm run electron:dist:mac:x64 -- --publish always
-
-  dmg_arm64:
-    needs: prepare
-    runs-on: macos-latest
-
-    steps:
-      - name: Check out Git repository
-        uses: actions/checkout@v4
-
-      - name: Install Node.js and NPM
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Build
-        run: npm run install-all
-
-      # Notarization uses the App Store Connect API key. The .p8 is stored
-      # base64-encoded in APPLE_API_KEY_CONTENT and decoded into a temp file.
-      - name: Prepare Apple API key
-        run: |
-          echo "${{ secrets.APPLE_API_KEY_CONTENT }}" | base64 --decode > "$RUNNER_TEMP/apple_api_key.p8"
-          echo "APPLE_API_KEY=$RUNNER_TEMP/apple_api_key.p8" >> "$GITHUB_ENV"
-
-      - name: Release
-        if: contains(github.ref, 'master')
-        env:
-          CSC_LINK: ${{ secrets.APPLE_CERTIFICATE }}
-          CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: npm run electron:dist:mac:arm64 -- --publish always
-
-  exe:
-    needs: prepare
-    runs-on: windows-latest
-
-    steps:
-      - name: Check out Git repository
-        uses: actions/checkout@v4
-
-      - name: Install Node.js and NPM
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Build
-        run: npm run install-all
-
-      - name: Release
-        if: contains(github.ref, 'master')
-        run: npm run electron:dist:win -- --publish always
+          gh release create "$RELEASE_TAG" release/*.exe release/SHA256SUMS.txt \
+            --repo "$GH_REPO" --verify-tag --title "Storytel Player $RELEASE_TAG for Windows" \
+            --notes-file release-notes.md "${release_flags[@]}"

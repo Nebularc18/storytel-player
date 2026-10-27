@@ -3,12 +3,14 @@
 This fork contains security fixes for diagnostic logging, SSO verification,
 local media access, and release builds. See [Security fixes](SECURITY_FIXES.md)
 for validation, migration notes, and remaining limitations. Existing app sessions
-must sign in again after upgrading. Upstream download links below refer to the
-original project and do not include these fork changes.
+must sign in again after upgrading. Download this fork's patched Windows installer
+from [Releases](https://github.com/Nebularc18/storytel-player/releases).
+See [Releasing](RELEASING.md) for the tag-based Windows release workflow.
+Other upstream download links below do not include these fork changes.
 
 ![](https://img.shields.io/github/release/debba/storytel-player.svg?style=flat)
 ![](https://img.shields.io/github/downloads/debba/storytel-player/total.svg?style=flat)
-![Build & Release](https://github.com/debba/storytel-player/workflows/Build%20&%20Release/badge.svg)
+[![Tagged Windows release](https://github.com/Nebularc18/storytel-player/actions/workflows/build.yml/badge.svg)](https://github.com/Nebularc18/storytel-player/actions/workflows/build.yml)
 [![Known Vulnerabilities](https://snyk.io//test/github/debba/storytel-player/badge.svg?targetFile=package.json)](https://snyk.io//test/github/debba/storytel-player?targetFile=package.json)
 [![Discord](https://img.shields.io/discord/1470772941296894128?color=5865F2&logo=discord&logoColor=white)](https://discord.gg/YrZPHAwMSG)
 ![i18n](https://img.shields.io/badge/i18n-EN%20|%20IT%20|%20DE%20|%20ES%20|%20FR%20|%20SV-blue)
@@ -19,7 +21,13 @@ original project and do not include these fork changes.
 
 <img src="docs/assets/og_image.png" width="90%"></img>
 
-## Release Download:
+## Windows release from this fork
+
+[Download the patched Windows installer](https://github.com/Nebularc18/storytel-player/releases/latest).
+Releases include the installer and SHA-256 checksum. Installers are currently unsigned.
+
+## Upstream downloads without this fork's patches
+
 [![Windows](https://img.shields.io/badge/Windows-Download-blue?logo=windows)](https://github.com/debba/storytel-player/releases/download/v1.4.1/Storytel-Player-Setup-1.4.1.exe) [![macOS Intel](https://img.shields.io/badge/macOS_Intel-Download-black?logo=apple)](https://github.com/debba/storytel-player/releases/download/v1.4.1/Storytel-Player-1.4.1-mac-x64.dmg) [![macOS Apple Silicon](https://img.shields.io/badge/macOS_Apple_Silicon-Download-black?logo=apple)](https://github.com/debba/storytel-player/releases/download/v1.4.1/Storytel-Player-1.4.1-mac-arm64.dmg) [![Linux](https://img.shields.io/badge/Linux-Download-green?logo=linux)](https://github.com/debba/storytel-player/releases/download/v1.4.1/Storytel-Player-1.4.1.AppImage)
 
 ## What's New
