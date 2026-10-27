@@ -244,7 +244,7 @@ function BookView() {
                     {/* Action Buttons Row */}
                     <div className="flex items-center gap-3 mb-8 flex-wrap justify-center">
                         {/* Play Button */}
-                        <button
+                        {book.abook && <button
                             onClick={handlePlayBook}
                             className="px-7 py-3.5 bg-[#FF5100] hover:bg-[#ff641a] text-white rounded-full transition-all flex items-center gap-2 text-base font-bold shadow-lg shadow-[#FF5100]/30 hover:scale-105 active:scale-95"
                         >
@@ -252,7 +252,7 @@ function BookView() {
                                 <path d="M8 5v14l11-7z"/>
                             </svg>
                             <span>{t('bookView.listen', 'Listen')}</span>
-                        </button>
+                        </button>}
 
                         {/* Save to Bookshelf Button */}
                         <button
@@ -303,12 +303,12 @@ function BookView() {
                         </div>
                         <div className="flex justify-between py-2 border-b border-gray-800">
                             <span className="text-gray-400">{t('bookView.duration')}</span>
-                            <span className="text-white">{formatDuration(book.abook.time)}</span>
+                            <span className="text-white">{book.abook?.time ? formatDuration(book.abook.time) : '—'}</span>
                         </div>
                         <div className="flex justify-between py-2 border-b border-gray-800">
                             <span className="text-gray-400">{t('bookView.category')}</span>
                             <span className="text-white flex items-center">
-                                {book.book.category.title}
+                                {book.book.category?.title || '—'}
                             </span>
                         </div>
                     </div>
