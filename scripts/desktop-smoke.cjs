@@ -9,7 +9,10 @@ const [stage, directory] = process.argv.slice(2);
 if (!['prepare', 'restart'].includes(stage) || !directory) throw new Error('Stage and isolated userData directory required');
 fs.mkdirSync(path.resolve(directory), { recursive: true });
 app.setPath('userData', path.resolve(directory));
+app.setPath('sessionData', path.resolve(directory));
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+// Finish assertions and cleanup before explicitly quitting the test process.
+app.on('window-all-closed', () => {});
 const timeout = setTimeout(() => { console.error('Desktop smoke test timed out'); app.exit(1); }, 60000);
 app.whenReady().then(async () => {
   assert.equal(process.platform, 'win32', 'This test validates Windows DPAPI');
@@ -26,12 +29,17 @@ app.whenReady().then(async () => {
     process.env.JWT_SECRET = key;
     const server = require('../server/dist/server.js').default;
     await server.ready();
-    storeManager.set('token', server.jwt.sign({ authVersion: 3, email: 'offline@example.test', storytelToken: '', jwt: '' }));
+    const token = server.jwt.sign({ authVersion: 3, email: 'offline@example.test', storytelToken: '', jwt: '' });
+    storeManager.set('token', token);
+    assert.equal(storeManager.get('token'), token);
+    assert.equal(storeManager.getSecret('signingKey'), key);
     storeManager.set('pos:123', JSON.stringify({ position: 0.5 }));
     const disk = fs.readFileSync(path.join(directory, 'config.json'), 'utf8');
+    assert.equal(typeof JSON.parse(disk).protectedToken, 'string');
+    assert.equal(typeof JSON.parse(disk).protectedSigningKey, 'string');
     assert.equal(disk.includes(key), false);
     assert.equal(disk.includes('offline@example.test'), false);
-    assert.equal(disk.includes(storeManager.get('token')), false);
+    assert.equal(disk.includes(token), false);
     await server.close();
   } else {
     const token = storeManager.get('token');
@@ -100,5 +108,7 @@ app.whenReady().then(async () => {
   }
   console.log(`Windows desktop ${stage} checks passed`);
   clearTimeout(timeout);
-  app.exit(0);
+  // Normal shutdown flushes Chromium's pending Local State writes, including
+  // the Windows encryption key. An immediate exit during ready can skip them.
+  app.quit();
 }).catch((error) => { console.error(error); app.exit(1); });
