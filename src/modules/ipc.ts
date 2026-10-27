@@ -7,6 +7,8 @@ import { WindowManager } from './window';
 import { SsoManager } from './sso';
 import { ApiConfig } from '../types';
 import { i18n } from '../i18n';
+import { SUPPORTED_LANGUAGES } from '../i18n/languages';
+import { assertRendererStoreKey, assertApiRequest } from './security';
 
 export class IpcManager {
   private serverManager: ServerManager;
@@ -26,6 +28,19 @@ export class IpcManager {
     this.ssoManager = ssoManager;
   }
 
+  private handle(channel: string, listener: (event: IpcMainInvokeEvent, ...args: any[]) => any): void {
+    ipcMain.handle(channel, (event, ...args) => {
+      if (!this.windowManager.isTrustedSender(event)) throw new Error('Untrusted IPC caller');
+      return listener(event, ...args);
+    });
+  }
+
+  private on(channel: string, listener: (event: Electron.IpcMainEvent, ...args: any[]) => void): void {
+    ipcMain.on(channel, (event, ...args) => {
+      if (this.windowManager.isTrustedSender(event)) listener(event, ...args);
+    });
+  }
+
   setupHandlers(): void {
     this.setupStoreHandlers();
     this.setupApiHandlers();
@@ -37,26 +52,31 @@ export class IpcManager {
   }
 
   private setupStoreHandlers(): void {
-    ipcMain.handle('store-get', (_event: IpcMainInvokeEvent, key: string) => {
+    this.handle('store-get', (_event: IpcMainInvokeEvent, key: string) => {
+      assertRendererStoreKey(key);
       return storeManager.get(key);
     });
 
-    ipcMain.handle(
+    this.handle(
       'store-set',
       (_event: IpcMainInvokeEvent, key: string, value: any) => {
+        assertRendererStoreKey(key);
+        if (typeof value !== 'string' || value.length > 1_000_000) throw new Error('Invalid storage value');
         storeManager.set(key, value);
       }
     );
 
-    ipcMain.handle('store-remove', (_event: IpcMainInvokeEvent, key: string) => {
+    this.handle('store-remove', (_event: IpcMainInvokeEvent, key: string) => {
+      assertRendererStoreKey(key);
       storeManager.remove(key);
     });
   }
 
   private setupApiHandlers(): void {
-    ipcMain.handle(
+    this.handle(
       'api:get',
       async (_event: IpcMainInvokeEvent, url: string, config: ApiConfig = {}) => {
+        assertApiRequest(url, config);
         return await this.serverManager.injectRequest(
           'GET',
           url,
@@ -66,7 +86,7 @@ export class IpcManager {
       }
     );
 
-    ipcMain.handle(
+    this.handle(
       'api:post',
       async (
         _event: IpcMainInvokeEvent,
@@ -74,6 +94,7 @@ export class IpcManager {
         data: any = {},
         config: ApiConfig = {}
       ) => {
+        assertApiRequest(url, config);
         return await this.serverManager.injectRequest(
           'POST',
           url,
@@ -83,7 +104,7 @@ export class IpcManager {
       }
     );
 
-    ipcMain.handle(
+    this.handle(
       'api:put',
       async (
         _event: IpcMainInvokeEvent,
@@ -91,6 +112,7 @@ export class IpcManager {
         data: any = {},
         config: ApiConfig = {}
       ) => {
+        assertApiRequest(url, config);
         return await this.serverManager.injectRequest(
           'PUT',
           url,
@@ -100,9 +122,10 @@ export class IpcManager {
       }
     );
 
-    ipcMain.handle(
+    this.handle(
       'api:delete',
       async (_event: IpcMainInvokeEvent, url: string, config: ApiConfig = {}) => {
+        assertApiRequest(url, config);
         return await this.serverManager.injectRequest(
           'DELETE',
           url,
@@ -114,33 +137,40 @@ export class IpcManager {
   }
 
   private setupTrayHandlers(): void {
-    ipcMain.on(
+    this.on(
       'update-playing-state',
-      (_event, { isPlaying, bookTitle }: { isPlaying: boolean; bookTitle: string }) => {
+      (_event, state: { isPlaying: boolean; bookTitle: string } | null) => {
+        if (!state || typeof state !== 'object') return;
+        const { isPlaying, bookTitle } = state;
+        if (typeof isPlaying !== 'boolean' || typeof bookTitle !== 'string') return;
         this.trayManager.updatePlayingState({ isPlaying, bookTitle });
       }
     );
 
-    ipcMain.on(
+    this.on(
       'update-auth-state',
-      (_event, { isAuthenticated }: { isAuthenticated: boolean }) => {
+      (_event, state: { isAuthenticated: boolean } | null) => {
+        if (!state || typeof state !== 'object') return;
+        const { isAuthenticated } = state;
+        if (typeof isAuthenticated !== 'boolean') return;
         this.trayManager.updatePlayingState({ isAuthenticated });
       }
     );
   }
 
   private setupLocaleHandlers(): void {
-    ipcMain.handle('get-locale', () => {
+    this.handle('get-locale', () => {
       return i18n.getLanguage();
     });
 
     // Everything the renderer needs to render the picker: the stored mode, the
     // language actually in use, and what 'auto' currently resolves to.
-    ipcMain.handle('get-locale-state', () => {
+    this.handle('get-locale-state', () => {
       return i18n.getState();
     });
 
-    ipcMain.handle('set-locale', async (_event: IpcMainInvokeEvent, locale: string) => {
+    this.handle('set-locale', async (_event: IpcMainInvokeEvent, locale: string) => {
+      if (locale !== 'auto' && !(SUPPORTED_LANGUAGES as readonly string[]).includes(locale)) throw new Error('Invalid locale');
       storeManager.set('appLanguage', locale);
 
       // Update the current language in i18n
@@ -165,26 +195,28 @@ export class IpcManager {
   }
 
   private setupLogsHandlers(): void {
-    ipcMain.handle('open-logs-folder', () => {
+    this.handle('open-logs-folder', () => {
       const logPath = path.join(process.env.USER_DATA_PATH || '', 'app.log');
       shell.showItemInFolder(logPath);
     });
   }
 
   private setupWindowHandlers(): void {
-    ipcMain.handle('window-set-always-on-top', (_event: IpcMainInvokeEvent, alwaysOnTop: boolean) => {
+    this.handle('window-set-always-on-top', (_event: IpcMainInvokeEvent, alwaysOnTop: boolean) => {
+      if (typeof alwaysOnTop !== 'boolean') throw new Error('Invalid window setting');
       this.windowManager.setAlwaysOnTop(alwaysOnTop);
     });
 
-    ipcMain.handle('window-is-always-on-top', () => {
+    this.handle('window-is-always-on-top', () => {
       return this.windowManager.isAlwaysOnTop();
     });
   }
 
   private setupAuthHandlers(): void {
-    ipcMain.handle(
+    this.handle(
       'auth:open-sso-window',
       async (_event: IpcMainInvokeEvent, provider?: 'google' | 'apple') => {
+        if (provider !== undefined && provider !== 'google' && provider !== 'apple') throw new Error('Invalid SSO provider');
         const parent = this.windowManager.getWindow();
         return this.ssoManager.openSsoWindow(parent, provider);
       }

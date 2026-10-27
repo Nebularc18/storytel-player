@@ -95,6 +95,10 @@ test('verified SSO with an empty bookshelf still signs in', async () => {
 test('legacy password login remains usable without logging its response credentials', async () => {
   const response = await server.inject({ method: 'POST', url: '/api/login', payload: { email: 'listener@example.test', password: 'test-password' } });
   assert.equal(response.statusCode, 200);
+  const claims = server.jwt.verify(response.json().token);
+  assert.equal(claims.encryptedPassword, undefined);
+  assert.equal(claims.password, undefined);
+  assert.equal(claims.authVersion, 3);
   const logs = await server.inject({ method: 'GET', url: '/api/logs/export', headers: { authorization: `Bearer ${response.json().token}` } });
   assert.equal(logs.statusCode, 200);
   assert.equal(logs.body.includes('LOGIN_TOKEN_SENTINEL'), false);
@@ -103,7 +107,7 @@ test('legacy password login remains usable without logging its response credenti
 });
 
 test('pre-fix app sessions are rejected by account APIs and auth status', async () => {
-  const old = server.jwt.sign({ email: 'old@example.test', ssoStorytelSession: 'dummy' });
+  const old = server.jwt.sign({ authVersion: 2, encryptedPassword: 'old-password', email: 'old@example.test', ssoStorytelSession: 'dummy' });
   const headers = { authorization: `Bearer ${old}` };
   assert.equal((await server.inject({ method: 'GET', url: '/api/logs', headers })).statusCode, 401);
   assert.equal((await server.inject({ method: 'GET', url: '/api/auth/status', headers })).json().authenticated, false);
@@ -111,32 +115,15 @@ test('pre-fix app sessions are rejected by account APIs and auth status', async 
 
 test('the old public default signing key cannot forge a new session', async () => {
   const encoded = (value) => Buffer.from(JSON.stringify(value)).toString('base64url');
-  const input = `${encoded({ alg: 'HS256', typ: 'JWT' })}.${encoded({ authVersion: 2, email: 'attacker@example.test' })}`;
+  const input = `${encoded({ alg: 'HS256', typ: 'JWT' })}.${encoded({ authVersion: 3, email: 'attacker@example.test' })}`;
   const signature = crypto.createHmac('sha256', 'your-super-secret-jwt-key-change-this-in-production').update(input).digest('base64url');
   const response = await server.inject({ method: 'GET', url: '/api/logs', headers: { authorization: `Bearer ${input}.${signature}` } });
   assert.equal(response.statusCode, 401);
 });
 
-test('desktop session keys survive a process restart and remain installation-specific', () => {
-  const first = fs.mkdtempSync(path.join(directory, 'install-one-'));
-  const second = fs.mkdtempSync(path.join(directory, 'install-two-'));
-  const environment = { IS_ELECTRON: 'true', USER_DATA_PATH: first };
-  const key = resolveJwtSecret(environment);
-  const jwt = require('fast-jwt');
-  const token = jwt.createSigner({ key })({ authVersion: 2, email: 'offline@example.test' });
-  // Load the helper in a separate process, as a fresh Electron main would.
-  const { execFileSync } = require('node:child_process');
-  const restartedKey = execFileSync(process.execPath, ['--import', 'tsx', '-e',
-    'process.stdout.write(require("./authSecret.ts").resolveJwtSecret())'], {
-    cwd: path.resolve(__dirname, '..'),
-    env: { ...process.env, IS_ELECTRON: 'true', USER_DATA_PATH: first }, encoding: 'utf8',
-  });
-  assert.equal(restartedKey, key);
-  assert.equal(jwt.createVerifier({ key: restartedKey })(token).email, 'offline@example.test');
-  assert.notEqual(resolveJwtSecret({ IS_ELECTRON: 'true', USER_DATA_PATH: second }), key);
-  if (process.platform !== 'win32') {
-    assert.equal(fs.statSync(path.join(first, '.session-signing-key')).mode & 0o777, 0o600);
-  }
+test('desktop cannot fall back to an unencrypted signing key', () => {
+  assert.throws(() => resolveJwtSecret({ IS_ELECTRON: 'true', USER_DATA_PATH: directory }));
+  assert.equal(fs.existsSync(path.join(directory, '.session-signing-key')), false);
   assert.throws(() => resolveJwtSecret({ JWT_SECRET: 'your-super-secret-jwt-key-change-this-in-production' }));
   assert.throws(() => resolveJwtSecret({ JWT_SECRET: 'short' }));
   assert.notEqual(resolveJwtSecret({}), resolveJwtSecret({}));
@@ -237,4 +224,16 @@ test('HTTP log exports cannot disclose injected payload credentials', async () =
   const response = await server.inject({ method: 'GET', url: '/api/logs/export', headers: { authorization: `Bearer ${session}` } });
   assert.equal(response.statusCode, 200);
   assert.equal(response.body.includes('EXPORT_SENTINEL'), false);
+});
+
+test('legacy upstream expiry never retries with a saved password', async () => {
+  const response = await server.inject({ method: 'POST', url: '/api/login', payload: { email: 'listener@example.test', password: 'test-password' } });
+  const token = response.json().token;
+  const before = upstreamCalls;
+  const failed = await server.inject({ method: 'GET', url: '/api/bookshelf', headers: { authorization: `Bearer ${token}` } });
+  assert.equal(failed.statusCode, 401);
+  assert.equal(upstreamCalls, before + 1);
+  const offlineBefore = upstreamCalls;
+  assert.equal((await server.inject({ method: 'GET', url: '/api/auth/status', headers: { authorization: `Bearer ${token}` } })).json().authenticated, true);
+  assert.equal(upstreamCalls, offlineBefore);
 });

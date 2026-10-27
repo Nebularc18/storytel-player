@@ -9,19 +9,17 @@ import path from "path";
 import { pathToFileURL } from "url";
 import axios from "axios";
 import { appLogger } from "./logger";
-import { encryptPassword } from "./passwordCrypt";
 import { createMediaAccess, verifyMediaAccess } from "./mediaAccess";
 import { resolveJwtSecret } from "./authSecret";
 
 // Extend JWT user type. Legacy (email/password) login populates storytelToken,
-// jwt, and encryptedPassword; SSO login populates the sso* fields instead and
+// and jwt; SSO login populates the sso* fields instead and
 // leaves the legacy ones empty. Email is set in both cases.
 interface JWTUser {
   authVersion: number;
   email: string;
   storytelToken: string;
   jwt: string;
-  encryptedPassword?: string;
   ssoStorytelSession?: string;
   ssoFirebaseRefreshToken?: string;
   ssoFirebaseApiKey?: string;
@@ -49,9 +47,6 @@ function hydrateStorytelClient(user: JWTUser): StorytelClient {
         jwt: user.jwt ?? "",
       },
     };
-    if (user.email && user.encryptedPassword) {
-      client.setCredentials(user.email, user.encryptedPassword);
-    }
   }
   return client;
 }
@@ -91,7 +86,7 @@ function replyError(reply: FastifyReply, error: any) {
 }
 
 const JWT_SECRET = resolveJwtSecret();
-const AUTH_VERSION = 2;
+const AUTH_VERSION = 3;
 const DOWNLOADS_DIR = process.env.IS_ELECTRON
   ? "" + process.env.DOWNLOAD_PATH
   : path.join(__dirname, "downloads");
@@ -190,7 +185,6 @@ fastify.post<{
 
     const storytelClient = new StorytelClient();
     const loginData = await storytelClient.login(email, password);
-    const encPwd = encryptPassword(password.trim());
 
     // Create JWT token with storytel client data
     const token = fastify.jwt.sign({
@@ -198,7 +192,6 @@ fastify.post<{
       storytelToken: loginData.accountInfo.singleSignToken,
       jwt: loginData.accountInfo.jwt,
       email: email,
-      encryptedPassword: encPwd,
     });
 
     reply.send({ success: true, message: "Login successful", token });
@@ -778,7 +771,7 @@ fastify.post<{
         });
 
         const totalLength = parseInt(
-          response.headers["content-length"] || "0",
+          String(response.headers["content-length"] || "0"),
           10,
         );
         let downloadedLength = 0;

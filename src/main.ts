@@ -1,9 +1,12 @@
-import {app, BrowserWindow} from 'electron';
+import {app, BrowserWindow, session} from 'electron';
+import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
+import {storeManager} from './modules/store';
 import {WindowManager} from './modules/window';
 import {TrayManager} from './modules/tray';
 import {ServerManager} from './modules/server';
 import {IpcManager} from './modules/ipc';
-import {UpdaterManager} from './modules/updater';
 import {SsoManager} from './modules/sso';
 import {i18n} from './i18n';
 
@@ -14,7 +17,6 @@ let windowManager: WindowManager;
 let trayManager: TrayManager;
 let serverManager: ServerManager;
 let ipcManager: IpcManager;
-let updaterManager: UpdaterManager;
 let ssoManager: SsoManager;
 
 async function initialize(): Promise<void> {
@@ -23,8 +25,19 @@ async function initialize(): Promise<void> {
     process.env.DOWNLOAD_PATH = app.getPath('downloads');
     process.env.USER_DATA_PATH = app.getPath('userData');
 
+    storeManager.initializeSecurity();
+    let signingKey = storeManager.getSecret('signingKey');
+    if (!signingKey) {
+        signingKey = crypto.randomBytes(32).toString('hex');
+        storeManager.setSecret('signingKey', signingKey);
+    }
+    process.env.JWT_SECRET = signingKey;
+    fs.rmSync(path.join(app.getPath('userData'), '.session-signing-key'), { force: true });
+    // Remove the old persistent OAuth cookies and Firebase IndexedDB copy.
+    await session.fromPartition('persist:storytel-sso').clearStorageData();
+
     windowManager = new WindowManager(isDev, isDebug);
-    const mainWindow = windowManager.create();
+    windowManager.create();
 
     serverManager = new ServerManager();
     await serverManager.initialize();
@@ -49,10 +62,6 @@ async function initialize(): Promise<void> {
 
     ipcManager = new IpcManager(serverManager, trayManager, windowManager, ssoManager);
     ipcManager.setupHandlers();
-
-    // Initialize auto-updater
-    updaterManager = new UpdaterManager(mainWindow, isDev);
-    updaterManager.initialize();
 }
 
 // Single instance lock
@@ -92,14 +101,5 @@ app.on('window-all-closed', async () => {
 app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
         windowManager.create();
-    }
-});
-
-app.on('certificate-error', (event, webContents, url, error, certificate, callback) => {
-    if (isDev) {
-        event.preventDefault();
-        callback(true);
-    } else {
-        callback(false);
     }
 });

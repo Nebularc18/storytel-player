@@ -1,0 +1,72 @@
+name: Windows installer validation
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install locked dependencies
+        run: |
+          npm ci
+          npm ci --prefix server
+          npm ci --prefix client
+      - name: Check advisories and regression tests
+        run: |
+          npm audit
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm audit --prefix server
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm audit --prefix client
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npx --no-install tsc --noEmit -p server/tsconfig.json
+      - name: Build unsigned installer without publication
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run electron:dist:win -- --publish never
+      - name: Verify Windows vault, restart, IPC and offline playback
+        run: |
+          $fixture = Join-Path $env:RUNNER_TEMP 'storytel-smoke-user-data'
+          $script = Join-Path $pwd 'scripts/desktop-smoke.cjs'
+          foreach ($stage in @('prepare', 'restart')) {
+            $process = Start-Process -FilePath '.\node_modules\electron\dist\electron.exe' -ArgumentList @("`"$script`"", $stage, "`"$fixture`"") -Wait -PassThru
+            if ($process.ExitCode -ne 0) { throw "Desktop $stage check failed: $($process.ExitCode)" }
+          }
+      - name: Install and launch in the disposable Windows runner
+        run: |
+          $installer = Get-ChildItem dist -Filter '*.exe' | Select-Object -First 1
+          if (!$installer) { throw 'Installer missing' }
+          $destination = Join-Path $env:RUNNER_TEMP 'storytel-installed'
+          $install = Start-Process -FilePath $installer.FullName -ArgumentList @('/S', "/D=$destination") -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Installer failed: $($install.ExitCode)" }
+          $executable = Join-Path $destination 'Storytel Player.exe'
+          if (!(Test-Path $executable)) { throw 'Installed executable missing' }
+          $player = Start-Process -FilePath $executable -PassThru
+          try {
+            if (!$player.WaitForInputIdle(30000)) { throw 'Installed player did not become responsive' }
+            if ($player.HasExited) { throw 'Installed player exited unexpectedly' }
+          } finally {
+            if (!$player.HasExited) { Stop-Process -Id $player.Id -Force }
+          }
+          Get-FileHash $installer.FullName -Algorithm SHA256 | Format-List | Out-File dist/windows-installer-sha256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-windows-installer
+          path: |
+            dist/*.exe
+            dist/windows-installer-sha256.txt
+          if-no-files-found: error
