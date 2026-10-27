@@ -1,21 +1,15 @@
 name: Pre-Release
 
-env:
-  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+permissions:
+  contents: read
 
 on:
   push:
     tags:
       # Only pre-release semver tags (those carrying a "-" suffix, e.g. v1.3.0-beta.1).
       - "v*-*"
+  # Select a trusted prerelease tag when dispatching manually.
   workflow_dispatch:
-    inputs:
-      pr_number:
-        description: "PR number to build (from any fork). Builds from refs/pull/<N>/head and is ALWAYS marked as prerelease."
-        required: false
-      tag_name:
-        description: "Tag/release name (e.g. v1.3.0-beta.1). Required when pr_number is set."
-        required: false
 
 defaults:
   run:
@@ -23,6 +17,7 @@ defaults:
 
 jobs:
   prepare:
+    if: startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -31,30 +26,25 @@ jobs:
       tag: ${{ steps.meta.outputs.tag }}
       version: ${{ steps.meta.outputs.version }}
     steps:
-      - name: Resolve build ref + tag
+      - name: Resolve trusted prerelease tag
         id: meta
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_SHA: ${{ github.sha }}
         run: |
-          if [ -n "${{ inputs.pr_number }}" ]; then
-            # Fork/PR builds: check out the PR head and require an explicit tag.
-            if [ -z "${{ inputs.tag_name }}" ]; then
-              echo "::error::tag_name is required when pr_number is provided"
-              exit 1
-            fi
-            echo "ref=refs/pull/${{ inputs.pr_number }}/head" >> "$GITHUB_OUTPUT"
-            TAG="${{ inputs.tag_name }}"
-          else
-            echo "ref=${{ github.ref }}" >> "$GITHUB_OUTPUT"
-            TAG="${{ inputs.tag_name || github.ref_name }}"
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z.-]+$ ]]; then
+            echo "::error::A prerelease version tag is required"
+            exit 1
           fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          # electron-builder derives its release tag from package.json version (v<version>),
-          # so we strip the leading "v" to feed it back in during the build step.
-          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "ref=$RELEASE_SHA" >> "$GITHUB_OUTPUT"
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Check out Git repository
+      - name: Check out trusted release commit
         uses: actions/checkout@v4
         with:
-          ref: ${{ steps.meta.outputs.ref }}
+          ref: ${{ github.sha }}
+          persist-credentials: false
 
       - name: Create the pre-release up front
         env:
@@ -103,15 +93,12 @@ jobs:
             script: electron:dist:win
 
     runs-on: ${{ matrix.os }}
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
     steps:
       - name: Check out Git repository
         uses: actions/checkout@v4
         with:
           ref: ${{ needs.prepare.outputs.ref }}
+          persist-credentials: false
 
       - name: Install Node.js and NPM
         uses: actions/setup-node@v4
@@ -139,7 +126,10 @@ jobs:
           '
 
       - name: Build
-        run: npm run install-all
+        run: |
+          npm ci
+          npm ci --prefix server
+          npm ci --prefix client
 
       # macOS notarization uses the App Store Connect API key. The .p8 is stored
       # base64-encoded in APPLE_API_KEY_CONTENT and decoded into a temp file.
@@ -151,6 +141,7 @@ jobs:
 
       - name: Publish pre-release
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Scoped to macOS jobs only; empty elsewhere so Windows/Linux signing is untouched.
           CSC_LINK: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE || '' }}
           CSC_KEY_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}

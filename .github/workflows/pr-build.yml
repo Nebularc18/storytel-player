@@ -1,0 +1,48 @@
+name: Build untrusted PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to build without signing or publication
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate pull request number
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::A numeric pull request number is required"
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ inputs.pr_number }}/head
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # This runner never receives signing secrets or publishing authority.
+      - name: Install and build
+        run: |
+          npm ci
+          npm ci --prefix server
+          npm ci --prefix client
+          npm run build
+          npm run server:build
+          npm run electron:build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-pr-build
+          path: |
+            client/build
+            server/dist
+            dist/electron
